@@ -1,93 +1,125 @@
+import csv
 import time
-import pandas as pd
 from selenium import webdriver
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    NoSuchElementException,
+    TimeoutException,
+)
 
-options = webdriver.ChromeOptions()
-options.add_argument("--headless")
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+def setup_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # Run headless Chrome for performance
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
 
 
-def scrape_company_page(company_url):
+def retry_on_stale_element(retries=3, delay=2):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            attempts = 0
+            while attempts < retries:
+                try:
+                    return func(*args, **kwargs)
+                except StaleElementReferenceException:
+                    attempts += 1
+                    print(f"Stale element encountered. Retrying... (Attempt {attempts})")
+                    time.sleep(delay)
+            print(f"Failed to retrieve element after {retries} retries.")
+            return None
+
+        return wrapper
+
+    return decorator
+
+
+@retry_on_stale_element()
+def scrape_company_data(driver, link):
     try:
-        driver.get(company_url)
-        time.sleep(5)
-
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//td[text()='Name']/following-sibling::td"))
+        driver.get(link)
+        time.sleep(3)  # Wait for page to load
+        table = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "e-table"))
         )
-        print(f"Accessing {company_url}")
+        rows = table.find_elements(By.TAG_NAME, "tr")
 
-        name = driver.find_element(By.XPATH, "//td[text()='Name']/following-sibling::td").text.strip()
-        address = driver.find_element(By.XPATH, "//td[text()='Adresse']/following-sibling::td").text.strip()
-        website = driver.find_element(By.XPATH, "//td[text()='Internet']/following-sibling::td").text.strip()
-        handelsregister = driver.find_element(By.XPATH,
-                                              "//td[text()='Handelsregister (HR)']/following-sibling::td").text.strip()
+        # Debugging output (optional, can be commented out)
+        # print(f"Number of rows found: {len(rows)}")
 
-        return {
-            "Name": name,
-            "Address": address,
-            "Website": website,
-            "Handelsregister": handelsregister
-        }
+        company_data = {}
+        for row in rows:
+            header_cells = row.find_elements(By.TAG_NAME, "th")
+            data_cells = row.find_elements(By.TAG_NAME, "td")
+            if header_cells and data_cells:
+                key = header_cells[0].text.strip()
+                value = data_cells[0].text.strip()
+                company_data[key] = value
+                # Debugging output (optional)
+                # print(f"Extracted data - {key}: {value}")
+            else:
+                # Debugging output (optional)
+                # print("Row does not have expected structure, skipping.")
+                pass
 
-    except TimeoutException:
-        print(f"Timeout while waiting for elements on {company_url}")
-        return {
-            "Name": None,
-            "Address": None,
-            "Website": None,
-            "Handelsregister": None
-        }
-    except NoSuchElementException as e:
-        print(f"Error extracting data for {company_url}: {e}")
-        return {
-            "Name": None,
-            "Address": None,
-            "Website": None,
-            "Handelsregister": None
-        }
+        # Debugging output (optional)
+        # print(f"Company data collected: {company_data}")
+        return company_data
+    except (NoSuchElementException, TimeoutException) as e:
+        print(f"Error scraping company: {link}, Error: {e}")
+        return None
 
 
-def scrape_all_companies(base_url):
-    driver.get(base_url)
-    print("Waiting for company links to load...")
+def main():
+    driver = setup_driver()
 
-    time.sleep(10)
+    csv_file = "scraped_data.csv"
+    fieldnames = ['Name', 'Sitz', 'Adresse', 'Internet', 'Handelsregister (HR)', 'Bemerkungen']
 
-    try:
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//a[contains(@href, '/finma-public/warnungen/warnliste/')]"))
-        )
-        company_links = driver.find_elements(By.XPATH, "//a[contains(@href, '/finma-public/warnungen/warnliste/')]")
-        print(f"Found {len(company_links)} companies.")
-        return [link.get_attribute('href') for link in company_links]
-    except TimeoutException:
-        print("Timeout while loading company links.")
-        return []
+    with open(csv_file, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        driver.get("https://www.finma.ch/de/finma-public/warnungen/warnliste/")
+
+        try:
+            table = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "e-table"))
+            )
+        except TimeoutException:
+            print("Failed to load the table in time.")
+            driver.quit()
+            return
+
+        links = table.find_elements(By.TAG_NAME, "a")
+        print(f"Found {len(links)} companies.")
+
+        company_urls = [link.get_attribute('href') for link in links]
+
+        for index, company_url in enumerate(company_urls):
+            try:
+                print(f"Scraping company {index + 1}/{len(company_urls)}: {company_url}")
+                company_data = scrape_company_data(driver, company_url)
+
+                if company_data:
+                    # Create a dictionary with all fieldnames to ensure all keys are present
+                    row = {field: company_data.get(field, '') for field in fieldnames}
+                    writer.writerow(row)
+                else:
+                    print(f"No data collected for {company_url}")
+            except Exception as e:
+                print(f"Error scraping company {index + 1}: {e}")
+                continue
+
+    driver.quit()
+    print("Scraping complete! Data saved to", csv_file)
 
 
-base_url = "https://www.finma.ch/de/finma-public/warnungen/warnliste/"
-
-company_urls = scrape_all_companies(base_url)
-
-all_company_data = []
-
-for company_url in company_urls:
-    print(f"Scraping company: {company_url}")
-    company_details = scrape_company_page(company_url)
-    if company_details:
-        all_company_data.append(company_details)
-
-df = pd.DataFrame(all_company_data)
-
-df.to_csv('scraped_data.csv', index=False)
-
-driver.quit()
-
-print("Scraping complete! Data saved to scraped_data.csv")
+if __name__ == "__main__":
+    main()
