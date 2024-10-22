@@ -15,7 +15,7 @@ from selenium.common.exceptions import (
 
 def setup_driver():
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # Run headless Chrome for performance
+    options.add_argument("--headless")
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
     return driver
@@ -44,14 +44,12 @@ def retry_on_stale_element(retries=3, delay=2):
 def scrape_company_data(driver, link):
     try:
         driver.get(link)
-        time.sleep(3)  # Wait for page to load
+        time.sleep(3)
         table = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CLASS_NAME, "e-table"))
         )
         rows = table.find_elements(By.TAG_NAME, "tr")
 
-        # Debugging output (optional, can be commented out)
-        # print(f"Number of rows found: {len(rows)}")
 
         company_data = {}
         for row in rows:
@@ -61,15 +59,11 @@ def scrape_company_data(driver, link):
                 key = header_cells[0].text.strip()
                 value = data_cells[0].text.strip()
                 company_data[key] = value
-                # Debugging output (optional)
-                # print(f"Extracted data - {key}: {value}")
+
             else:
-                # Debugging output (optional)
-                # print("Row does not have expected structure, skipping.")
+
                 pass
 
-        # Debugging output (optional)
-        # print(f"Company data collected: {company_data}")
         return company_data
     except (NoSuchElementException, TimeoutException) as e:
         print(f"Error scraping company: {link}, Error: {e}")
@@ -108,7 +102,6 @@ def main():
                 company_data = scrape_company_data(driver, company_url)
 
                 if company_data:
-                    # Create a dictionary with all fieldnames to ensure all keys are present
                     row = {field: company_data.get(field, '') for field in fieldnames}
                     writer.writerow(row)
                 else:
